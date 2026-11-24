@@ -1,0 +1,334 @@
+<script setup lang="ts">
+import { ref, onMounted } from 'vue'
+import Dialog from 'primevue/dialog'
+import Button from 'primevue/button'
+import InputText from 'primevue/inputtext'
+import Textarea from 'primevue/textarea'
+import Paginator from 'primevue/paginator'
+import ProgressSpinner from 'primevue/progressspinner'
+import Icon from '../../components/Icon.vue'
+import api from '../../services/api'
+import { useAppConfirm } from '../../composables/useAppConfirm'
+import { useToast } from '../../composables/useToast'
+import { useDocumentsStore } from '../../stores/documents'
+import { extractApiError } from '../../utils/apiError'
+
+interface UnitItem {
+  id?: string
+  name: string
+  description?: string
+  users_count?: number
+  folders_count?: number
+}
+
+const { confirmDelete, confirmAction } = useAppConfirm()
+const { toastMessage, toastVisible, showToast } = useToast()
+const docStore = useDocumentsStore()
+const unitsList = ref<UnitItem[]>([])
+const loading = ref(false)
+const submitting = ref(false)
+const isModalOpen = ref(false)
+const isEditing = ref(false)
+const editingUnitId = ref<string | null>(null)
+
+const first = ref(0)
+const rows = 10
+const totalRecords = ref(0)
+
+function onPageChange(event: { page: number; first: number }) {
+  first.value = event.first
+  const targetPage = event.page + 1
+  fetchUnits(targetPage)
+}
+
+const form = ref({
+  name: '',
+  description: '',
+})
+
+function getErrorMessage(err: unknown, fallback: string): string {
+  return extractApiError(err, fallback, {
+    forbiddenFallback: 'Akses ditolak: Anda tidak memiliki izin untuk mengelola unit kerja.',
+  })
+}
+
+async function fetchUnits(page = 1) {
+  loading.value = true
+  try {
+    const res = await api.get('/v1/units', {
+      params: {
+        page,
+        per_page: rows,
+      },
+    })
+    unitsList.value = res.data?.data ?? []
+    totalRecords.value = res.data?.meta?.total ?? unitsList.value.length
+  } catch (err: any) {
+    showToast(getErrorMessage(err, 'Gagal memuat daftar unit kerja'))
+  } finally {
+    loading.value = false
+  }
+}
+
+onMounted(() => {
+  Promise.allSettled([
+    fetchUnits(),
+    docStore.fetchFolders({ all: true }),
+  ])
+})
+
+function getUnitFoldersCount(unit: UnitItem): number {
+  if (typeof unit.folders_count === 'number') {
+    return unit.folders_count
+  }
+  return docStore.folders.filter(
+    (f) => (unit.id && (f.unit_id === unit.id || f.unitId === unit.id)) || f.unit?.name?.toLowerCase() === unit.name.toLowerCase()
+  ).length
+}
+
+function getUnitUsersCount(unit: UnitItem): number {
+  return typeof unit.users_count === 'number' ? unit.users_count : 0
+}
+
+function openAddModal() {
+  isEditing.value = false
+  editingUnitId.value = null
+  form.value = {
+    name: '',
+    description: '',
+  }
+  isModalOpen.value = true
+}
+
+function openEditModal(unit: UnitItem) {
+  isEditing.value = true
+  editingUnitId.value = unit.id ?? null
+  form.value = {
+    name: unit.name,
+    description: unit.description || '',
+  }
+  isModalOpen.value = true
+}
+
+function closeModal() {
+  isModalOpen.value = false
+}
+
+function submitUnit() {
+  const name = form.value.name.trim()
+  const description = form.value.description.trim()
+
+  if (!name) {
+    showToast('Nama unit wajib diisi')
+    return
+  }
+
+  const editing = isEditing.value && editingUnitId.value
+  const targetId = editingUnitId.value
+  confirmAction({
+    title: editing ? 'Perbarui Unit Kerja' : 'Tambah Unit Kerja Baru',
+    message: editing
+      ? `Apakah Anda yakin ingin memperbarui unit "${name}"?`
+      : `Apakah Anda yakin ingin menambahkan unit kerja "${name}"?`,
+    confirmLabel: editing ? 'Perbarui Unit' : 'Simpan Unit',
+    onAccept: async () => {
+      submitting.value = true
+      try {
+        if (editing && targetId) {
+          await api.put(`/v1/units/${targetId}`, { name, description })
+          showToast(`Unit "${name}" berhasil diperbarui`)
+        } else {
+          await api.post('/v1/units', { name, description })
+          showToast(`Unit "${name}" berhasil ditambahkan`)
+        }
+        closeModal()
+        await fetchUnits(Math.floor(first.value / rows) + 1)
+      } catch (err: any) {
+        const defaultErr = editing ? 'Gagal memperbarui unit' : 'Gagal menambahkan unit'
+        showToast(getErrorMessage(err, defaultErr))
+      } finally {
+        submitting.value = false
+      }
+    },
+  })
+}
+
+function deleteUnit(unit: UnitItem) {
+  if (!unit.id) {
+    showToast('ID unit tidak valid')
+    return
+  }
+
+  confirmDelete({
+    title: 'Hapus Unit Kerja',
+    message: `Apakah Anda yakin ingin menghapus unit "${unit.name}"?`,
+    submessage: 'Unit tidak dapat dihapus jika masih digunakan oleh pengguna atau folder.',
+    confirmLabel: 'Hapus Unit',
+    onAccept: async () => {
+      try {
+        await api.delete(`/v1/units/${unit.id}`)
+        showToast(`Unit "${unit.name}" telah dihapus`)
+        if (unitsList.value.length === 1 && first.value > 0) {
+          first.value = Math.max(0, first.value - rows)
+        }
+        await fetchUnits(Math.floor(first.value / rows) + 1)
+      } catch (err: any) {
+        showToast(getErrorMessage(err, 'Gagal menghapus unit'))
+        if (err.response?.status === 401) {
+          setTimeout(() => {
+            window.location.href = '/login'
+          }, 1500)
+        }
+      }
+    },
+  })
+}
+</script>
+
+<template>
+  <div class="flex flex-col gap-5">
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Master Unit Kerja</h2>
+        <Button size="small" @click="openAddModal" class="gap-1.5 font-medium">
+          <Icon name="plus" :size="14" />
+          <span>Tambah Unit</span>
+        </Button>
+      </div>
+
+      <div class="panel-body">
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th style="width: 200px;">Nama Unit</th>
+                <th>Deskripsi</th>
+                <th style="width: 120px; text-align: center;">Pengguna</th>
+                <th style="width: 120px; text-align: center;">Folder</th>
+                <th style="width: 90px; text-align: right;">Aksi</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="loading">
+                <td colspan="5" style="text-align: center; padding: 32px;" class="muted">
+                  <div class="flex flex-col items-center justify-center gap-2">
+                    <ProgressSpinner style="width: 32px; height: 32px" strokeWidth="4" />
+                    <span>Memuat data unit kerja...</span>
+                  </div>
+                </td>
+              </tr>
+              <tr v-else v-for="unit in unitsList" :key="unit.id || unit.name">
+                <td>
+                  <b>{{ unit.name }}</b>
+                </td>
+                <td class="muted">{{ unit.description || '—' }}</td>
+                <td class="num" style="text-align: center;">{{ getUnitUsersCount(unit) }}</td>
+                <td class="num" style="text-align: center;">{{ getUnitFoldersCount(unit) }}</td>
+                <td style="text-align: right;">
+                  <div style="display: inline-flex; gap: 4px; align-items: center; justify-content: flex-end;">
+                    <button 
+                      class="iconbtn info" 
+                      title="Edit Unit"
+                      @click="openEditModal(unit)"
+                    >
+                      <Icon name="edit" :size="14" />
+                    </button>
+                    <button 
+                      class="iconbtn danger" 
+                      title="Hapus Unit"
+                      @click="deleteUnit(unit)"
+                    >
+                      <Icon name="trash" :size="14" />
+                    </button>
+                  </div>
+                </td>
+              </tr>
+              <tr v-if="!loading && unitsList.length === 0">
+                <td colspan="5" class="empty">
+                  <Icon name="building" :size="28" />
+                  <div>Belum ada unit kerja terdaftar</div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Numeric Pagination (PrimeVue) -->
+        <div class="border-t border-[var(--border)] p-2 flex justify-center">
+          <Paginator
+            v-model:first="first"
+            :rows="rows"
+            :totalRecords="totalRecords"
+            :alwaysShow="true"
+            @page="onPageChange"
+            template="FirstPageLink PrevPageLink PageLinks NextPageLink LastPageLink"
+          />
+        </div>
+      </div>
+    </div>
+
+    <!-- PrimeVue Dialog Tambah / Edit Unit -->
+    <Dialog
+      v-model:visible="isModalOpen"
+      modal
+      :header="isEditing ? 'Edit Unit Kerja' : 'Tambah Unit Kerja Baru'"
+      :style="{ width: '440px' }"
+    >
+      <form @submit.prevent="submitUnit" class="flex flex-col gap-4">
+        <div class="flex flex-col gap-1.5">
+          <label for="unit-name" class="text-xs font-semibold" style="color: var(--text-muted)">
+            Nama Unit
+          </label>
+          <InputText 
+            id="unit-name"
+            v-model="form.name" 
+            placeholder="mis. Pengadaan & Logistik" 
+            fluid 
+            required 
+          />
+        </div>
+
+        <div class="flex flex-col gap-1.5">
+          <label for="unit-desc" class="text-xs font-semibold" style="color: var(--text-muted)">
+            Deskripsi
+          </label>
+          <Textarea 
+            id="unit-desc"
+            v-model="form.description" 
+            placeholder="Penjelasan tugas unit kerja ini (opsional)" 
+            rows="3" 
+            fluid 
+            autoResize 
+          />
+        </div>
+
+        <div class="flex justify-end gap-2 pt-3 border-t border-[var(--border)]">
+          <Button 
+            type="button" 
+            label="Batal" 
+            severity="secondary" 
+            text 
+            @click="closeModal" 
+          />
+          <Button 
+            type="submit" 
+            :label="submitting ? 'Menyimpan...' : (isEditing ? 'Perbarui Unit' : 'Simpan Unit')" 
+            :loading="submitting"
+          >
+            <template #icon>
+              <Icon :name="isEditing ? 'check' : 'plus'" :size="14" />
+            </template>
+          </Button>
+        </div>
+      </form>
+    </Dialog>
+
+    <!-- Toast Notification -->
+    <div v-if="toastVisible" class="toasts">
+      <div class="toast">
+        <Icon name="check" :size="16" />
+        <span>{{ toastMessage }}</span>
+      </div>
+    </div>
+  </div>
+</template>
