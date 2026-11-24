@@ -336,6 +336,8 @@ const fillDemo = (demoEmail: string, demoPassword: string) => {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .demo-card:hover {
@@ -362,6 +364,7 @@ const fillDemo = (demoEmail: string, demoPassword: string) => {
   display: flex;
   align-items: center;
   gap: 10px;
+  min-width: 0;
 }
 
 .demo-dot {
@@ -384,6 +387,7 @@ const fillDemo = (demoEmail: string, demoPassword: string) => {
   font-size: 11px;
   font-family: ui-monospace, monospace;
   opacity: 0.85;
+  word-break: break-all;
 }
 
 .demo-pwd {
@@ -465,6 +469,22 @@ const fillDemo = (demoEmail: string, demoPassword: string) => {
   0%, 100% { transform: translateX(0); }
   20%, 60% { transform: translateX(-5px); }
   40%, 80% { transform: translateX(5px); }
+}
+
+@media (max-width: 480px) {
+  .login-page {
+    padding: 56px 12px 24px;
+    align-items: flex-start;
+  }
+
+  .login-card {
+    padding: 18px;
+  }
+
+  .demo-head {
+    flex-wrap: wrap;
+    gap: 4px;
+  }
 }
 
 </style>
