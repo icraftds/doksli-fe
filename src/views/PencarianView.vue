@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onMounted } from 'vue'
+import { ref, watch, onMounted, onUnmounted } from 'vue'
 import Select from 'primevue/select'
 import Tag from 'primevue/tag'
 import Paginator from 'primevue/paginator'
@@ -8,6 +8,14 @@ import api from '../services/api'
 import { useDocumentsStore, type Doc } from '../stores/documents'
 import { useAppConfirm } from '../composables/useAppConfirm'
 import { useCategoryBadge } from '../composables/useCategoryBadge'
+import DocumentDetailDrawer from '../components/dokumen/DocumentDetailDrawer.vue'
+import {
+  getCategoryName,
+  getCurrentVersion,
+  getFolderName as resolveFolderName,
+  getOwnerName,
+  isDocTrashed,
+} from '../utils/documentHelpers'
 
 const store = useDocumentsStore()
 const { confirmDelete, confirmAction } = useAppConfirm()
@@ -65,13 +73,17 @@ function onPageChange(event: { page: number; first: number }) {
   executeSearch(targetPage)
 }
 
-let searchTimeout: any = null
+let searchTimeout: ReturnType<typeof setTimeout> | null = null
 watch(q, () => {
-  clearTimeout(searchTimeout)
+  if (searchTimeout) clearTimeout(searchTimeout)
   searchTimeout = setTimeout(() => {
     first.value = 0
     executeSearch(1)
   }, 300)
+})
+
+onUnmounted(() => {
+  if (searchTimeout) clearTimeout(searchTimeout)
 })
 
 watch([selectedCategory, selectedFolder, includeTrash], () => {
@@ -97,42 +109,7 @@ onMounted(async () => {
 })
 
 function getFolderName(folderId?: string): string {
-  if (!folderId) return '-'
-  const f = store.folders.find(x => x.id === folderId)
-  return f ? f.name : folderId
-}
-
-function getCategoryName(doc: Doc): string {
-  return doc.category?.name || doc.categoryName || (typeof doc.category === 'string' ? doc.category : '-')
-}
-
-function getOwnerName(doc: Doc): string {
-  return doc.owner?.name || doc.ownerName || (typeof doc.owner === 'string' ? doc.owner : '-')
-}
-
-function isDocTrashed(doc: Doc): boolean {
-  return !!doc.deleted_at || doc.status === 'trashed' || !!doc.deletedAt
-}
-
-
-
-function getCurrentVersion(doc: Doc): any {
-  if (doc.latest_version) {
-    return {
-      v: doc.latest_version.version_number,
-      size: doc.latest_version.size_bytes,
-      uploader: doc.latest_version.uploader?.name || 'Admin',
-      note: doc.latest_version.note,
-    }
-  }
-  if (!doc.versions || doc.versions.length === 0) return { v: 1, size: doc.size || 0 }
-  const last = doc.versions[doc.versions.length - 1]
-  return {
-    v: last.version_number ?? (last as any).v ?? 1,
-    size: last.size_bytes ?? (last as any).size ?? 0,
-    uploader: last.uploader?.name ?? (last as any).uploader ?? 'Admin',
-    note: last.note,
-  }
+  return resolveFolderName(store.folders, folderId)
 }
 
 function openDocDetail(doc: Doc) {
@@ -145,7 +122,16 @@ function closeDrawer() {
 }
 
 function handleDownload(doc: Doc) {
-  store.downloadDocument(doc.id)
+  confirmAction({
+    title: 'Unduh Dokumen',
+    message: `Apakah Anda yakin ingin mengunduh dokumen "${doc.name}"?`,
+    confirmLabel: 'Unduh',
+    icon: 'download',
+    acceptIcon: 'download',
+    onAccept: async () => {
+      await store.downloadDocument(doc.id)
+    },
+  })
 }
 
 function handleTrash(doc: Doc) {
@@ -201,7 +187,7 @@ function handleRestore(doc: Doc) {
             v-model="selectedCategory" 
             :options="['', ...categories]" 
             placeholder="Semua Kategori"
-            class="min-w-[170px]"
+            class="w-full sm:w-auto sm:min-w-[170px]"
             size="small"
           >
             <template #value="slotProps">
@@ -218,12 +204,12 @@ function handleRestore(doc: Doc) {
             optionLabel="name"
             optionValue="id"
             placeholder="Semua Folder"
-            class="min-w-[180px]"
+            class="w-full sm:w-auto sm:min-w-[180px]"
             size="small"
           />
 
           <!-- Checkbox Sertakan Tempat Sampah yang Jelas & Responsif -->
-          <label class="flex items-center gap-2 cursor-pointer ml-auto select-none p-1.5 px-3 rounded-lg border border-border bg-surface-2 hover:bg-surface-hover transition-colors">
+          <label class="flex items-center gap-2 cursor-pointer w-full sm:w-auto sm:ml-auto select-none p-1.5 px-3 rounded-lg border border-border bg-surface-2 hover:bg-surface-hover transition-colors">
             <input
               type="checkbox"
               v-model="includeTrash"
@@ -333,7 +319,7 @@ function handleRestore(doc: Doc) {
               <td style="text-align: right" @click.stop>
                 <div class="flex items-center justify-end gap-1">
                   <button
-                    class="iconbtn"
+                    class="iconbtn info"
                     title="Unduh dokumen"
                     @click="handleDownload(doc)"
                   >
@@ -374,105 +360,16 @@ function handleRestore(doc: Doc) {
       </div>
     </div>
 
-    <!-- Scrim & Drawer -->
-    <div class="scrim" :class="{ open: isDrawerOpen }" @click="closeDrawer"></div>
-    <div class="drawer" :class="{ open: isDrawerOpen }">
-      <template v-if="selectedDoc">
-        <div class="drawer-head">
-          <div class="flex flex-col gap-1 pr-4">
-            <h3 class="font-bold text-sm leading-snug">{{ selectedDoc.name }}</h3>
-            <div class="flex items-center gap-2">
-              <Tag
-                rounded
-                class="category-pill"
-                :style="{
-                  background: getCategoryBadge(getCategoryName(selectedDoc)).bg,
-                  color: getCategoryBadge(getCategoryName(selectedDoc)).text,
-                  border: getCategoryBadge(getCategoryName(selectedDoc)).border,
-                }"
-              >
-                <span
-                  class="dot"
-                  :style="{ background: getCategoryBadge(getCategoryName(selectedDoc)).dot }"
-                ></span>
-                {{ getCategoryName(selectedDoc) }}
-              </Tag>
-              <span class="text-xs text-text-muted">Folder: {{ getFolderName(selectedDoc.folderId || selectedDoc.folder_id) }}</span>
-            </div>
-          </div>
-          <button class="iconbtn" @click="closeDrawer" title="Tutup">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
-          </button>
-        </div>
-
-        <div class="drawer-body">
-          <div>
-            <div class="section-title">Informasi Dokumen</div>
-            <div class="field-grid">
-              <div class="field">
-                <span class="k">Ukuran File</span>
-                <span class="v num">{{ store.fmtSize(selectedDoc.size) }}</span>
-              </div>
-              <div class="field">
-                <span class="k">Versi Aktif</span>
-                <span class="v num">v{{ getCurrentVersion(selectedDoc)?.v || 1 }}</span>
-              </div>
-              <div class="field">
-                <span class="k">Pemilik</span>
-                <span class="v">{{ getOwnerName(selectedDoc) }}</span>
-              </div>
-              <div class="field">
-                <span class="k">Tanggal</span>
-                <span class="v num text-xs">{{ selectedDoc.date }}</span>
-              </div>
-            </div>
-          </div>
-
-          <div>
-            <div class="section-title">Riwayat Versi ({{ selectedDoc.versions?.length || 1 }})</div>
-            <div class="flex flex-col">
-              <div
-                v-for="(ver, idx) in (selectedDoc.versions || [getCurrentVersion(selectedDoc)])"
-                :key="idx"
-                class="vrow"
-                :class="{ current: idx === (selectedDoc.versions?.length || 1) - 1 }"
-              >
-                <div class="vnum">v{{ ver.version_number ?? (ver as any).v ?? 1 }}</div>
-                <div class="flex-1 min-w-0">
-                  <div class="flex items-center gap-2">
-                    <span class="font-semibold text-xs">{{ ver.uploader?.name ?? (ver as any).uploader ?? 'Admin' }}</span>
-                    <span class="num text-[11px] text-text-muted">{{ store.fmtSize(ver.size_bytes ?? (ver as any).size) }}</span>
-                    <span v-if="idx === (selectedDoc.versions?.length || 1) - 1" class="text-[10px] bg-accent-soft text-accent px-1.5 py-0.5 rounded font-bold">AKTIF</span>
-                  </div>
-                  <div class="text-[11.5px] text-text-muted truncate">{{ ver.note }}</div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div class="btnrow pt-3 border-t border-border mt-auto">
-            <button class="btn primary flex-1 justify-center" @click="handleDownload(selectedDoc)">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-              Unduh File
-            </button>
-            <button
-              v-if="!isDocTrashed(selectedDoc)"
-              class="btn danger"
-              @click="handleTrash(selectedDoc)"
-            >
-              Pindahkan ke Sampah
-            </button>
-            <button
-              v-else
-              class="btn success"
-              style="color: var(--success); font-weight: 600"
-              @click="handleRestore(selectedDoc)"
-            >
-              Pulihkan Dokumen
-            </button>
-          </div>
-        </div>
-      </template>
-    </div>
+    <!-- Shared Document Detail Drawer -->
+    <DocumentDetailDrawer
+      :open="isDrawerOpen"
+      :doc="selectedDoc"
+      :folder-name="getFolderName(selectedDoc?.folderId || selectedDoc?.folder_id)"
+      :format-size="store.fmtSize"
+      @close="closeDrawer"
+      @download="handleDownload"
+      @trash="handleTrash"
+      @restore="handleRestore"
+    />
   </div>
 </template>

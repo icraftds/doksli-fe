@@ -5,8 +5,10 @@ import Button from 'primevue/button'
 import Paginator from 'primevue/paginator'
 import ProgressSpinner from 'primevue/progressspinner'
 import { useDocumentsStore, type Audit } from '../stores/documents'
+import { useAppConfirm } from '../composables/useAppConfirm'
 
 const store = useDocumentsStore()
+const { confirmAction } = useAppConfirm()
 
 const selectedUser = ref<string>('')
 const selectedAction = ref<string>('')
@@ -83,8 +85,22 @@ onMounted(async () => {
   ])
 })
 
-// Export CSV handler
-async function exportCsv() {
+// Export CSV handler with confirmation
+function exportCsv() {
+  confirmAction({
+    title: 'Ekspor Log Audit',
+    message: 'Apakah Anda yakin ingin mengekspor data log audit ke file CSV?',
+    submessage: 'File CSV akan diunduh sesuai filter pengguna dan aksi yang sedang aktif.',
+    confirmLabel: 'Ekspor CSV',
+    icon: 'download',
+    acceptIcon: 'download',
+    onAccept: async () => {
+      await executeExportCsv()
+    },
+  })
+}
+
+async function executeExportCsv() {
   try {
     const params: Record<string, any> = { all: true }
     if (selectedUser.value) params.user = selectedUser.value
@@ -142,12 +158,12 @@ async function exportCsv() {
     <div class="panel">
       <div class="panel-body">
         <div class="filters flex items-center justify-between gap-3 w-full flex-wrap">
-          <div class="flex items-center gap-3 flex-wrap">
+          <div class="flex items-center gap-3 flex-wrap w-full sm:w-auto">
             <Select 
               v-model="selectedUser" 
               :options="['', ...availableUsers]" 
               placeholder="Semua pengguna"
-              class="min-w-[180px]"
+              class="w-full sm:w-auto sm:min-w-[180px]"
               size="small"
             >
               <template #value="slotProps">
@@ -162,7 +178,7 @@ async function exportCsv() {
               v-model="selectedAction" 
               :options="['', ...availableActions]" 
               placeholder="Semua aksi"
-              class="min-w-[160px]"
+              class="w-full sm:w-auto sm:min-w-[160px]"
               size="small"
             >
               <template #value="slotProps">
@@ -180,7 +196,7 @@ async function exportCsv() {
             severity="secondary" 
             text 
             size="small" 
-            class="export-btn shrink-0 whitespace-nowrap ml-auto"
+            class="export-btn btn-action-edit shrink-0 whitespace-nowrap sm:ml-auto"
             @click="exportCsv"
           />
         </div>
@@ -299,5 +315,13 @@ async function exportCsv() {
 
 .audit-object {
   color: var(--text-muted);
+}
+
+@media (max-width: 640px) {
+  .audit-table th,
+  .audit-table td {
+    padding: 10px 12px;
+    font-size: 12.5px;
+  }
 }
 </style>
