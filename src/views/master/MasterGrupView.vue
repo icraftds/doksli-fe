@@ -11,6 +11,8 @@ import Icon from '../../components/Icon.vue'
 import api from '../../services/api'
 import { users as sampleUsers } from '../../data/sampleData'
 import { useAppConfirm } from '../../composables/useAppConfirm'
+import { useToast } from '../../composables/useToast'
+import { extractApiError } from '../../utils/apiError'
 
 interface UserItem {
   id: string
@@ -29,7 +31,8 @@ interface GroupItem {
   memberIds?: string[]
 }
 
-const { confirmDelete } = useAppConfirm()
+const { confirmDelete, confirmAction } = useAppConfirm()
+const { toastMessage, toastVisible, showToast } = useToast()
 const groupsList = ref<GroupItem[]>([])
 const allUsers = ref<UserItem[]>([])
 const groupMemberIds = ref<string[]>([])
@@ -44,9 +47,6 @@ const editingGroupId = ref<string | null>(null)
 
 const isMemberModalOpen = ref(false)
 const selectedGroup = ref<GroupItem | null>(null)
-
-const toastMessage = ref('')
-const toastVisible = ref(false)
 
 const first = ref(0)
 const rows = 10
@@ -63,22 +63,10 @@ const form = ref({
   description: '',
 })
 
-function showToast(msg: string) {
-  toastMessage.value = msg
-  toastVisible.value = true
-  setTimeout(() => {
-    toastVisible.value = false
-  }, 3000)
-}
-
-function getErrorMessage(err: any, fallback: string): string {
-  if (err.response?.status === 401) {
-    return 'Sesi login telah berakhir (Unauthenticated). Silakan login kembali.'
-  }
-  if (err.response?.status === 403) {
-    return err.response?.data?.message || 'Akses ditolak: Anda tidak memiliki izin untuk mengelola grup akses.'
-  }
-  return err.response?.data?.message || fallback
+function getErrorMessage(err: unknown, fallback: string): string {
+  return extractApiError(err, fallback, {
+    forbiddenFallback: 'Akses ditolak: Anda tidak memiliki izin untuk mengelola grup akses.',
+  })
 }
 
 async function fetchGroups(page = 1) {
@@ -147,7 +135,7 @@ function closeFormModal() {
   isFormModalOpen.value = false
 }
 
-async function submitGroup() {
+function submitGroup() {
   const name = form.value.name.trim()
   const description = form.value.description.trim()
 
@@ -156,34 +144,34 @@ async function submitGroup() {
     return
   }
 
-  submitting.value = true
-  try {
-    if (isEditing.value && editingGroupId.value) {
-      await api.put(`/v1/groups/${editingGroupId.value}`, {
-        name,
-        description,
-      })
-      showToast(`Grup "${name}" berhasil diperbarui`)
-    } else {
-      await api.post('/v1/groups', {
-        name,
-        description,
-      })
-      showToast(`Grup "${name}" berhasil dibuat`)
-    }
-    closeFormModal()
-    await fetchGroups(Math.floor(first.value / rows) + 1)
-  } catch (err: any) {
-    const defaultErr = isEditing.value ? 'Gagal memperbarui grup' : 'Gagal membuat grup'
-    showToast(getErrorMessage(err, defaultErr))
-    if (err.response?.status === 401) {
-      setTimeout(() => {
-        window.location.href = '/login'
-      }, 1500)
-    }
-  } finally {
-    submitting.value = false
-  }
+  const editing = isEditing.value && editingGroupId.value
+  const targetId = editingGroupId.value
+  confirmAction({
+    title: editing ? 'Perbarui Grup Akses' : 'Tambah Grup Akses Baru',
+    message: editing
+      ? `Apakah Anda yakin ingin memperbarui grup "${name}"?`
+      : `Apakah Anda yakin ingin membuat grup akses "${name}"?`,
+    confirmLabel: editing ? 'Perbarui Grup' : 'Simpan Grup',
+    onAccept: async () => {
+      submitting.value = true
+      try {
+        if (editing && targetId) {
+          await api.put(`/v1/groups/${targetId}`, { name, description })
+          showToast(`Grup "${name}" berhasil diperbarui`)
+        } else {
+          await api.post('/v1/groups', { name, description })
+          showToast(`Grup "${name}" berhasil dibuat`)
+        }
+        closeFormModal()
+        await fetchGroups(Math.floor(first.value / rows) + 1)
+      } catch (err: any) {
+        const defaultErr = editing ? 'Gagal memperbarui grup' : 'Gagal membuat grup'
+        showToast(getErrorMessage(err, defaultErr))
+      } finally {
+        submitting.value = false
+      }
+    },
+  })
 }
 
 function deleteGroup(group: GroupItem) {
@@ -252,35 +240,55 @@ function isMember(userId: string | number) {
   return groupMemberIds.value.includes(String(userId))
 }
 
-async function toggleMember(user: UserItem) {
+function toggleMember(user: UserItem) {
   if (!selectedGroup.value?.id) return
 
   const userId = String(user.id)
-  const groupId = selectedGroup.value.id
+  const group = selectedGroup.value
+  const groupId = group.id!
   const currentlyMember = isMember(userId)
 
-  try {
-    if (currentlyMember) {
-      await api.delete(`/v1/users/${userId}/groups/${groupId}`)
-      groupMemberIds.value = groupMemberIds.value.filter(id => id !== userId)
-      showToast(`${user.name} dihapus dari ${selectedGroup.value.name}`)
-    } else {
-      await api.post(`/v1/users/${userId}/groups`, {
-        group_ids: [groupId],
-      })
-      groupMemberIds.value.push(userId)
-      showToast(`${user.name} ditambahkan ke ${selectedGroup.value.name}`)
-    }
+  const performToggle = async () => {
+    try {
+      if (currentlyMember) {
+        await api.delete(`/v1/users/${userId}/groups/${groupId}`)
+        groupMemberIds.value = groupMemberIds.value.filter(id => id !== userId)
+        showToast(`${user.name} dihapus dari ${group.name}`)
+      } else {
+        await api.post(`/v1/users/${userId}/groups`, {
+          group_ids: [groupId],
+        })
+        groupMemberIds.value.push(userId)
+        showToast(`${user.name} ditambahkan ke ${group.name}`)
+      }
 
-    if (selectedGroup.value) {
-      selectedGroup.value.users_count = groupMemberIds.value.length
+      if (selectedGroup.value) {
+        selectedGroup.value.users_count = groupMemberIds.value.length
+      }
+      const targetInList = groupsList.value.find(g => g.id === groupId)
+      if (targetInList) {
+        targetInList.users_count = groupMemberIds.value.length
+      }
+    } catch (err: any) {
+      showToast(getErrorMessage(err, 'Gagal memperbarui keanggotaan'))
     }
-    const targetInList = groupsList.value.find(g => g.id === groupId)
-    if (targetInList) {
-      targetInList.users_count = groupMemberIds.value.length
-    }
-  } catch (err: any) {
-    showToast(getErrorMessage(err, 'Gagal memperbarui keanggotaan'))
+  }
+
+  if (currentlyMember) {
+    confirmDelete({
+      title: 'Keluarkan Anggota Grup',
+      message: `Keluarkan "${user.name}" dari grup "${group.name}"?`,
+      submessage: 'Pengguna tidak lagi memiliki akses dokumen yang diberikan melalui grup ini.',
+      confirmLabel: 'Keluarkan',
+      onAccept: performToggle,
+    })
+  } else {
+    confirmAction({
+      title: 'Tambahkan Anggota Grup',
+      message: `Tambahkan "${user.name}" ke grup "${group.name}"?`,
+      confirmLabel: 'Tambahkan',
+      onAccept: performToggle,
+    })
   }
 }
 
@@ -344,12 +352,13 @@ function getUserUnitName(u: UserItem): string {
                       severity="secondary" 
                       text 
                       size="small" 
+                      class="btn-action-edit"
                       @click="openMemberModal(group)" 
                     />
-                    <button class="iconbtn" title="Edit Grup" @click="openEditModal(group)">
+                    <button class="iconbtn info" title="Edit Grup" @click="openEditModal(group)">
                       <Icon name="edit" :size="14" />
                     </button>
-                    <button class="iconbtn" title="Hapus Grup" @click="deleteGroup(group)">
+                    <button class="iconbtn danger" title="Hapus Grup" @click="deleteGroup(group)">
                       <Icon name="trash" :size="14" />
                     </button>
                   </div>

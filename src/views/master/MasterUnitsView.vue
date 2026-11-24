@@ -8,17 +8,22 @@ import Paginator from 'primevue/paginator'
 import ProgressSpinner from 'primevue/progressspinner'
 import Icon from '../../components/Icon.vue'
 import api from '../../services/api'
-import { users, folders } from '../../data/sampleData'
 import { useAppConfirm } from '../../composables/useAppConfirm'
+import { useToast } from '../../composables/useToast'
+import { useDocumentsStore } from '../../stores/documents'
+import { extractApiError } from '../../utils/apiError'
 
 interface UnitItem {
   id?: string
   name: string
   description?: string
   users_count?: number
+  folders_count?: number
 }
 
-const { confirmDelete } = useAppConfirm()
+const { confirmDelete, confirmAction } = useAppConfirm()
+const { toastMessage, toastVisible, showToast } = useToast()
+const docStore = useDocumentsStore()
 const unitsList = ref<UnitItem[]>([])
 const loading = ref(false)
 const submitting = ref(false)
@@ -36,30 +41,15 @@ function onPageChange(event: { page: number; first: number }) {
   fetchUnits(targetPage)
 }
 
-const toastMessage = ref('')
-const toastVisible = ref(false)
-
 const form = ref({
   name: '',
   description: '',
 })
 
-function showToast(msg: string) {
-  toastMessage.value = msg
-  toastVisible.value = true
-  setTimeout(() => {
-    toastVisible.value = false
-  }, 3000)
-}
-
-function getErrorMessage(err: any, fallback: string): string {
-  if (err.response?.status === 401) {
-    return 'Sesi login telah berakhir (Unauthenticated). Silakan login kembali.'
-  }
-  if (err.response?.status === 403) {
-    return err.response?.data?.message || 'Akses ditolak: Anda tidak memiliki izin untuk mengelola unit kerja.'
-  }
-  return err.response?.data?.message || fallback
+function getErrorMessage(err: unknown, fallback: string): string {
+  return extractApiError(err, fallback, {
+    forbiddenFallback: 'Akses ditolak: Anda tidak memiliki izin untuk mengelola unit kerja.',
+  })
 }
 
 async function fetchUnits(page = 1) {
@@ -81,20 +71,23 @@ async function fetchUnits(page = 1) {
 }
 
 onMounted(() => {
-  fetchUnits()
+  Promise.allSettled([
+    fetchUnits(),
+    docStore.fetchFolders({ all: true }),
+  ])
 })
 
-function getUnitFoldersCount(name: string): number {
-  return folders.filter(
-    f => f.name.toLowerCase() === name.toLowerCase() || (f as any).unit?.toLowerCase() === name.toLowerCase()
+function getUnitFoldersCount(unit: UnitItem): number {
+  if (typeof unit.folders_count === 'number') {
+    return unit.folders_count
+  }
+  return docStore.folders.filter(
+    (f) => (unit.id && (f.unit_id === unit.id || f.unitId === unit.id)) || f.unit?.name?.toLowerCase() === unit.name.toLowerCase()
   ).length
 }
 
 function getUnitUsersCount(unit: UnitItem): number {
-  if (typeof unit.users_count === 'number') {
-    return unit.users_count
-  }
-  return users.filter(u => u.unit?.toLowerCase() === unit.name.toLowerCase()).length
+  return typeof unit.users_count === 'number' ? unit.users_count : 0
 }
 
 function openAddModal() {
@@ -121,7 +114,7 @@ function closeModal() {
   isModalOpen.value = false
 }
 
-async function submitUnit() {
+function submitUnit() {
   const name = form.value.name.trim()
   const description = form.value.description.trim()
 
@@ -130,34 +123,34 @@ async function submitUnit() {
     return
   }
 
-  submitting.value = true
-  try {
-    if (isEditing.value && editingUnitId.value) {
-      await api.put(`/v1/units/${editingUnitId.value}`, {
-        name,
-        description,
-      })
-      showToast(`Unit "${name}" berhasil diperbarui`)
-    } else {
-      await api.post('/v1/units', {
-        name,
-        description,
-      })
-      showToast(`Unit "${name}" berhasil ditambahkan`)
-    }
-    closeModal()
-    await fetchUnits(Math.floor(first.value / rows) + 1)
-  } catch (err: any) {
-    const defaultErr = isEditing.value ? 'Gagal memperbarui unit' : 'Gagal menambahkan unit'
-    showToast(getErrorMessage(err, defaultErr))
-    if (err.response?.status === 401) {
-      setTimeout(() => {
-        window.location.href = '/login'
-      }, 1500)
-    }
-  } finally {
-    submitting.value = false
-  }
+  const editing = isEditing.value && editingUnitId.value
+  const targetId = editingUnitId.value
+  confirmAction({
+    title: editing ? 'Perbarui Unit Kerja' : 'Tambah Unit Kerja Baru',
+    message: editing
+      ? `Apakah Anda yakin ingin memperbarui unit "${name}"?`
+      : `Apakah Anda yakin ingin menambahkan unit kerja "${name}"?`,
+    confirmLabel: editing ? 'Perbarui Unit' : 'Simpan Unit',
+    onAccept: async () => {
+      submitting.value = true
+      try {
+        if (editing && targetId) {
+          await api.put(`/v1/units/${targetId}`, { name, description })
+          showToast(`Unit "${name}" berhasil diperbarui`)
+        } else {
+          await api.post('/v1/units', { name, description })
+          showToast(`Unit "${name}" berhasil ditambahkan`)
+        }
+        closeModal()
+        await fetchUnits(Math.floor(first.value / rows) + 1)
+      } catch (err: any) {
+        const defaultErr = editing ? 'Gagal memperbarui unit' : 'Gagal menambahkan unit'
+        showToast(getErrorMessage(err, defaultErr))
+      } finally {
+        submitting.value = false
+      }
+    },
+  })
 }
 
 function deleteUnit(unit: UnitItem) {
@@ -230,18 +223,18 @@ function deleteUnit(unit: UnitItem) {
                 </td>
                 <td class="muted">{{ unit.description || '—' }}</td>
                 <td class="num" style="text-align: center;">{{ getUnitUsersCount(unit) }}</td>
-                <td class="num" style="text-align: center;">{{ getUnitFoldersCount(unit.name) }}</td>
+                <td class="num" style="text-align: center;">{{ getUnitFoldersCount(unit) }}</td>
                 <td style="text-align: right;">
                   <div style="display: inline-flex; gap: 4px; align-items: center; justify-content: flex-end;">
                     <button 
-                      class="iconbtn" 
+                      class="iconbtn info" 
                       title="Edit Unit"
                       @click="openEditModal(unit)"
                     >
                       <Icon name="edit" :size="14" />
                     </button>
                     <button 
-                      class="iconbtn" 
+                      class="iconbtn danger" 
                       title="Hapus Unit"
                       @click="deleteUnit(unit)"
                     >

@@ -10,6 +10,8 @@ import Icon from '../../components/Icon.vue'
 import api from '../../services/api'
 import { useAppConfirm } from '../../composables/useAppConfirm'
 import { useCategoryBadge } from '../../composables/useCategoryBadge'
+import { useToast } from '../../composables/useToast'
+import { extractApiError } from '../../utils/apiError'
 
 interface CategoryItem {
   id?: string
@@ -18,16 +20,15 @@ interface CategoryItem {
   created_dt?: string
 }
 
-const { confirmDelete } = useAppConfirm()
+const { confirmDelete, confirmAction } = useAppConfirm()
 const { getCategoryBadge, registerCategoryColor } = useCategoryBadge()
+const { toastMessage, toastVisible, showToast } = useToast()
 const categoriesList = ref<CategoryItem[]>([])
 const loading = ref(false)
 const submitting = ref(false)
 const isModalOpen = ref(false)
 const editingCategory = ref<CategoryItem | null>(null)
 const catName = ref('')
-const toastMessage = ref('')
-const toastVisible = ref(false)
 
 const first = ref(0)
 const rows = 10
@@ -39,22 +40,10 @@ function onPageChange(event: { page: number; first: number }) {
   fetchCategories(targetPage)
 }
 
-function showToast(msg: string) {
-  toastMessage.value = msg
-  toastVisible.value = true
-  setTimeout(() => {
-    toastVisible.value = false
-  }, 3000)
-}
-
-function getErrorMessage(err: any, fallback: string): string {
-  if (err.response?.status === 401) {
-    return 'Sesi login telah berakhir (Unauthenticated). Silakan login kembali.'
-  }
-  if (err.response?.status === 403) {
-    return err.response?.data?.message || 'Akses ditolak: Anda tidak memiliki izin untuk mengelola kategori.'
-  }
-  return err.response?.data?.message || fallback
+function getErrorMessage(err: unknown, fallback: string): string {
+  return extractApiError(err, fallback, {
+    forbiddenFallback: 'Akses ditolak: Anda tidak memiliki izin untuk mengelola kategori.',
+  })
 }
 
 async function fetchCategories(page = 1) {
@@ -98,36 +87,41 @@ function closeModal() {
   editingCategory.value = null
 }
 
-async function submitCategory() {
+function submitCategory() {
   const name = catName.value.trim()
   if (!name) {
     showToast('Nama kategori wajib diisi')
     return
   }
 
-  submitting.value = true
-  try {
-    if (editingCategory.value?.id) {
-      await api.put(`/v1/categories/${editingCategory.value.id}`, { name })
-      showToast(`Kategori "${name}" berhasil diperbarui`)
-    } else {
-      await api.post('/v1/categories', { name })
-      registerCategoryColor(name)
-      showToast(`Kategori "${name}" berhasil ditambahkan`)
-    }
-    closeModal()
-    await fetchCategories(Math.floor(first.value / rows) + 1)
-  } catch (err: any) {
-    const defaultErr = editingCategory.value ? 'Gagal memperbarui kategori' : 'Gagal menambahkan kategori'
-    showToast(getErrorMessage(err, defaultErr))
-    if (err.response?.status === 401) {
-      setTimeout(() => {
-        window.location.href = '/login'
-      }, 1500)
-    }
-  } finally {
-    submitting.value = false
-  }
+  const editingId = editingCategory.value?.id
+  confirmAction({
+    title: editingId ? 'Perbarui Kategori' : 'Tambah Kategori Baru',
+    message: editingId
+      ? `Apakah Anda yakin ingin memperbarui kategori menjadi "${name}"?`
+      : `Apakah Anda yakin ingin menambahkan kategori "${name}"?`,
+    confirmLabel: editingId ? 'Perbarui' : 'Simpan',
+    onAccept: async () => {
+      submitting.value = true
+      try {
+        if (editingId) {
+          await api.put(`/v1/categories/${editingId}`, { name })
+          showToast(`Kategori "${name}" berhasil diperbarui`)
+        } else {
+          await api.post('/v1/categories', { name })
+          registerCategoryColor(name)
+          showToast(`Kategori "${name}" berhasil ditambahkan`)
+        }
+        closeModal()
+        await fetchCategories(Math.floor(first.value / rows) + 1)
+      } catch (err: any) {
+        const defaultErr = editingId ? 'Gagal memperbarui kategori' : 'Gagal menambahkan kategori'
+        showToast(getErrorMessage(err, defaultErr))
+      } finally {
+        submitting.value = false
+      }
+    },
+  })
 }
 
 function deleteCategory(cat: CategoryItem) {
@@ -214,9 +208,10 @@ function deleteCategory(cat: CategoryItem) {
                       severity="secondary" 
                       text 
                       size="small" 
+                      class="btn-action-edit"
                       @click="openEditModal(cat)" 
                     />
-                    <button class="iconbtn" title="Hapus Kategori" @click="deleteCategory(cat)">
+                    <button class="iconbtn danger" title="Hapus Kategori" @click="deleteCategory(cat)">
                       <Icon name="trash" :size="14" />
                     </button>
                   </div>

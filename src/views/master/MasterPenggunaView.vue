@@ -10,6 +10,8 @@ import Icon from '../../components/Icon.vue'
 import api from '../../services/api'
 import { useAppConfirm } from '../../composables/useAppConfirm'
 import { useAuthStore } from '../../stores/auth'
+import { useToast } from '../../composables/useToast'
+import { extractApiError } from '../../utils/apiError'
 
 interface RoleItem {
   id: string
@@ -35,7 +37,7 @@ interface UserItem {
   created_at?: string
 }
 
-const { confirmDelete } = useAppConfirm()
+const { confirmDelete, confirmAction } = useAppConfirm()
 const authStore = useAuthStore()
 
 const myUnitId = computed(() => {
@@ -73,13 +75,12 @@ const usersList = ref<UserItem[]>([])
 const rolesList = ref<RoleItem[]>([])
 const unitsList = ref<UnitItem[]>([])
 
+const { toastMessage, toastVisible, showToast } = useToast()
 const loading = ref(false)
 const submitting = ref(false)
 const isModalOpen = ref(false)
 const isEditMode = ref(false)
 const editingUserId = ref<string | null>(null)
-const toastMessage = ref('')
-const toastVisible = ref(false)
 
 const first = ref(0)
 const rows = 10
@@ -99,22 +100,10 @@ const form = ref({
   password: 'password123',
 })
 
-function showToast(msg: string) {
-  toastMessage.value = msg
-  toastVisible.value = true
-  setTimeout(() => {
-    toastVisible.value = false
-  }, 3000)
-}
-
-function getErrorMessage(err: any, fallback: string): string {
-  if (err.response?.status === 401) {
-    return 'Sesi login telah berakhir (Unauthenticated). Silakan login kembali.'
-  }
-  if (err.response?.status === 403) {
-    return err.response?.data?.message || 'Akses ditolak: Anda tidak memiliki izin untuk mengelola pengguna ini.'
-  }
-  return err.response?.data?.message || fallback
+function getErrorMessage(err: unknown, fallback: string): string {
+  return extractApiError(err, fallback, {
+    forbiddenFallback: 'Akses ditolak: Anda tidak memiliki izin untuk mengelola pengguna ini.',
+  })
 }
 
 async function fetchUsers(page = 1) {
@@ -246,7 +235,7 @@ function closeModal() {
   editingUserId.value = null
 }
 
-async function submitUser() {
+function submitUser() {
   if (!form.value.name.trim() || !form.value.email.trim()) {
     showToast('Nama dan email wajib diisi')
     return
@@ -262,63 +251,89 @@ async function submitUser() {
     return
   }
 
-  submitting.value = true
-  try {
-    if (isEditMode.value && editingUserId.value) {
-      const payload: Record<string, any> = {
-        name: form.value.name.trim(),
-        email: form.value.email.trim(),
-        role_id: form.value.role_id,
-        unit_id: form.value.unit_id || null,
-      }
-      if (form.value.password.trim()) {
-        payload.password = form.value.password.trim()
-      }
-      await api.put(`/v1/users/${editingUserId.value}`, payload)
-      showToast(`Data pengguna "${form.value.name}" berhasil diperbarui`)
-    } else {
-      await api.post('/v1/users', {
-        name: form.value.name.trim(),
-        email: form.value.email.trim(),
-        password: form.value.password,
-        role_id: form.value.role_id,
-        unit_id: form.value.unit_id || undefined,
-        status: 'active',
-      })
-      showToast(`Pengguna "${form.value.name}" berhasil ditambahkan`)
-    }
+  const editing = isEditMode.value && editingUserId.value
+  const targetId = editingUserId.value
+  const userName = form.value.name.trim()
 
-    closeModal()
-    await fetchUsers(Math.floor(first.value / rows) + 1)
-  } catch (err: any) {
-    showToast(getErrorMessage(err, isEditMode.value ? 'Gagal memperbarui pengguna' : 'Gagal menambahkan pengguna'))
-    if (err.response?.status === 401) {
-      setTimeout(() => {
-        window.location.href = '/login'
-      }, 1500)
-    }
-  } finally {
-    submitting.value = false
-  }
+  confirmAction({
+    title: editing ? 'Perbarui Pengguna' : 'Tambah Pengguna Baru',
+    message: editing
+      ? `Apakah Anda yakin ingin menyimpan perubahan data "${userName}"?`
+      : `Apakah Anda yakin ingin menambahkan pengguna "${userName}"?`,
+    confirmLabel: editing ? 'Perbarui Pengguna' : 'Simpan Pengguna',
+    onAccept: async () => {
+      submitting.value = true
+      try {
+        if (editing && targetId) {
+          const payload: Record<string, any> = {
+            name: userName,
+            email: form.value.email.trim(),
+            role_id: form.value.role_id,
+            unit_id: form.value.unit_id || null,
+          }
+          if (form.value.password.trim()) {
+            payload.password = form.value.password.trim()
+          }
+          await api.put(`/v1/users/${targetId}`, payload)
+          showToast(`Data pengguna "${userName}" berhasil diperbarui`)
+        } else {
+          await api.post('/v1/users', {
+            name: userName,
+            email: form.value.email.trim(),
+            password: form.value.password,
+            role_id: form.value.role_id,
+            unit_id: form.value.unit_id || undefined,
+            status: 'active',
+          })
+          showToast(`Pengguna "${userName}" berhasil ditambahkan`)
+        }
+
+        closeModal()
+        await fetchUsers(Math.floor(first.value / rows) + 1)
+      } catch (err: any) {
+        showToast(getErrorMessage(err, editing ? 'Gagal memperbarui pengguna' : 'Gagal menambahkan pengguna'))
+      } finally {
+        submitting.value = false
+      }
+    },
+  })
 }
 
-async function toggleStatus(user: UserItem) {
+function toggleStatus(user: UserItem) {
   if (!canManageUser(user)) {
     showToast('Akses ditolak: Anda hanya dapat mengelola pengguna dari unit Anda')
     return
   }
   const newStatus = user.status === 'active' ? 'suspended' : 'active'
-  try {
-    await api.put(`/v1/users/${user.id}`, { status: newStatus })
-    showToast(`Status "${user.name}" diubah menjadi ${newStatus === 'active' ? 'Aktif' : 'Nonaktif'}`)
-    await fetchUsers(Math.floor(first.value / rows) + 1)
-  } catch (err: any) {
-    showToast(getErrorMessage(err, 'Gagal memperbarui status pengguna'))
-    if (err.response?.status === 401) {
-      setTimeout(() => {
-        window.location.href = '/login'
-      }, 1500)
+  const isSuspending = newStatus === 'suspended'
+
+  const executeToggle = async () => {
+    try {
+      await api.put(`/v1/users/${user.id}`, { status: newStatus })
+      showToast(`Status "${user.name}" diubah menjadi ${newStatus === 'active' ? 'Aktif' : 'Nonaktif'}`)
+      await fetchUsers(Math.floor(first.value / rows) + 1)
+    } catch (err: any) {
+      showToast(getErrorMessage(err, 'Gagal memperbarui status pengguna'))
     }
+  }
+
+  if (isSuspending) {
+    confirmDelete({
+      title: 'Nonaktifkan Pengguna',
+      message: `Apakah Anda yakin ingin menonaktifkan akun "${user.name}"?`,
+      submessage: 'Pengguna tidak dapat masuk ke sistem sampai akunnya diaktifkan kembali.',
+      confirmLabel: 'Nonaktifkan',
+      icon: 'lock',
+      acceptIcon: 'lock',
+      onAccept: executeToggle,
+    })
+  } else {
+    confirmAction({
+      title: 'Aktifkan Pengguna',
+      message: `Apakah Anda yakin ingin mengaktifkan kembali akun "${user.name}"?`,
+      confirmLabel: 'Aktifkan',
+      onAccept: executeToggle,
+    })
   }
 }
 
@@ -431,6 +446,7 @@ function deleteUser(user: UserItem) {
                       severity="secondary" 
                       text 
                       size="small" 
+                      :class="user.status === 'active' ? 'btn-action-warn' : 'btn-action-success'"
                       :disabled="!canManageUser(user)"
                       :title="!canManageUser(user) ? 'Hanya dapat mengelola pengguna dari unit Anda' : (user.status === 'active' ? 'Nonaktifkan Akun' : 'Aktifkan Akun')"
                       @click="toggleStatus(user)" 
@@ -440,13 +456,14 @@ function deleteUser(user: UserItem) {
                       severity="secondary" 
                       text 
                       size="small" 
+                      class="btn-action-edit"
                       :disabled="!canManageUser(user)"
                       :title="!canManageUser(user) ? 'Hanya dapat mengelola pengguna dari unit Anda' : 'Edit Pengguna'"
                       @click="openEditModal(user)" 
                     />
                     <button 
                       type="button"
-                      class="iconbtn" 
+                      class="iconbtn danger" 
                       title="Hapus Pengguna"
                       :disabled="!canManageUser(user)"
                       @click="deleteUser(user)"
@@ -622,6 +639,8 @@ function deleteUser(user: UserItem) {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
   border-bottom: 1px solid var(--border);
 }
 
@@ -750,5 +769,17 @@ function deleteUser(user: UserItem) {
 
 .btn-toggle-action:hover {
   opacity: 0.75;
+}
+
+@media (max-width: 640px) {
+  .panel-head {
+    padding: 12px 14px;
+  }
+
+  .user-table th,
+  .user-table td {
+    padding: 10px 12px;
+    font-size: 12.5px;
+  }
 }
 </style>
