@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { useTheme } from '../composables/useTheme'
 import { useAuthStore } from '../stores/auth'
+import { useAppConfirm } from '../composables/useAppConfirm'
 import Icon from '../components/Icon.vue'
 import ToggleSwitch from 'primevue/toggleswitch'
 
@@ -10,8 +11,24 @@ const route = useRoute()
 const router = useRouter()
 const { theme, init, set } = useTheme()
 const authStore = useAuthStore()
+const { confirmDelete } = useAppConfirm()
 
 const isDark = ref(false)
+const isMobileNavOpen = ref(false)
+
+const closeMobileNav = () => {
+  isMobileNavOpen.value = false
+}
+
+const toggleMobileNav = () => {
+  isMobileNavOpen.value = !isMobileNavOpen.value
+}
+
+const handleKeydown = (e: KeyboardEvent) => {
+  if (e.key === 'Escape' && isMobileNavOpen.value) {
+    closeMobileNav()
+  }
+}
 
 const nav = [
   { id: 'dashboard', label: 'Dashboard', icon: 'grid', to: '/dashboard' },
@@ -53,35 +70,74 @@ onMounted(() => {
   init()
   isDark.value = theme.value === 'dark'
   authStore.checkAuth()
+  window.addEventListener('keydown', handleKeydown)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', handleKeydown)
+  document.body.style.overflow = ''
 })
 
 watch(isDark, (val) => {
   set(val ? 'dark' : 'light')
 })
 
+watch(isMobileNavOpen, (open) => {
+  document.body.style.overflow = open ? 'hidden' : ''
+})
+
 watch(() => route.path, (newPath) => {
   if (newPath.startsWith('/master')) {
     isMasterOpen.value = true
   }
+  closeMobileNav()
 })
 
 const handleLogout = () => {
-  authStore.logout()
-  router.push('/login')
+  confirmDelete({
+    title: 'Keluar dari Sistem',
+    message: 'Apakah Anda yakin ingin keluar dari akun Anda?',
+    submessage: 'Anda perlu masuk kembali untuk mengakses dokumen dan arsip.',
+    confirmLabel: 'Ya, Keluar',
+    icon: 'logout',
+    acceptIcon: 'logout',
+    onAccept: () => {
+      closeMobileNav()
+      authStore.logout()
+      router.push('/login')
+    },
+  })
 }
 </script>
 
 <template>
   <div class="app">
-    <aside class="sidebar">
-      <div class="brand">
-        <span class="mark">
-          <Icon name="archive" :size="16" />
-        </span>
-        <div>
-          <div class="name">DoksliApp</div>
-          <div class="sub">Manajemen Arsip</div>
+    <div
+      class="sidebar-scrim"
+      :class="{ open: isMobileNavOpen }"
+      aria-hidden="true"
+      @click="closeMobileNav"
+    ></div>
+
+    <aside class="sidebar" :class="{ open: isMobileNavOpen }">
+      <div class="sidebar-header">
+        <div class="brand">
+          <span class="mark">
+            <Icon name="archive" :size="16" />
+          </span>
+          <div>
+            <div class="name">DoksliApp</div>
+            <div class="sub">Manajemen Arsip</div>
+          </div>
         </div>
+        <button
+          type="button"
+          class="iconbtn mobile-nav-close"
+          aria-label="Tutup menu navigasi"
+          @click="closeMobileNav"
+        >
+          <Icon name="x" :size="16" />
+        </button>
       </div>
       
       <nav id="nav">
@@ -156,7 +212,18 @@ const handleLogout = () => {
 
     <main>
       <div class="topbar">
-        <h1>{{ pageTitle }}</h1>
+        <div class="topbar-left">
+          <button
+            type="button"
+            class="iconbtn mobile-nav-toggle"
+            aria-label="Buka menu navigasi"
+            :aria-expanded="isMobileNavOpen"
+            @click="toggleMobileNav"
+          >
+            <Icon name="menu" :size="18" />
+          </button>
+          <h1>{{ pageTitle }}</h1>
+        </div>
         <div class="persona">
           Masuk sebagai <b>{{ authStore.user?.name || 'Admin' }}</b> · <span class="muted">{{ authStore.userRole || 'Admin' }}</span>
         </div>
@@ -170,6 +237,30 @@ const handleLogout = () => {
 </template>
 
 <style scoped>
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.mobile-nav-close,
+.mobile-nav-toggle {
+  display: none;
+  flex-shrink: 0;
+}
+
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.sidebar-scrim {
+  display: none;
+}
+
 .brand .sub {
   font-size: 10px;
   color: var(--text-muted);
@@ -254,5 +345,29 @@ const handleLogout = () => {
 .logout-btn:hover {
   background: var(--danger);
   color: white;
+}
+
+@media (max-width: 1024px) {
+  .mobile-nav-toggle,
+  .mobile-nav-close {
+    display: inline-flex;
+  }
+
+  .sidebar-scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(10, 12, 16, 0.48);
+    backdrop-filter: blur(2px);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease;
+    z-index: 45;
+  }
+
+  .sidebar-scrim.open {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 </style>

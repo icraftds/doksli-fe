@@ -30,6 +30,7 @@ const icons: Record<string, string> = {
   info:'<circle cx="12" cy="12" r="9"/><path d="M12 11v5.5"/><circle cx="12" cy="7.7" r="0.2" fill="currentColor" stroke-width="1.4"/>',
   edit:'<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>',
   shield:'<path d="M12 3.2l7.5 2.8v5.6c0 4.6-3.2 8.1-7.5 9.2-4.3-1.1-7.5-4.6-7.5-9.2V6z"/><path d="M9 12l2.3 2.3L15.5 10"/>',
+  menu:'<line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>',
 }
 </script>
 <template>
