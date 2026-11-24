@@ -35,12 +35,6 @@ const handleLogin = async () => {
     isLoading.value = false
   }
 }
-
-const fillDemo = (demoEmail: string, demoPassword: string) => {
-  email.value = demoEmail
-  password.value = demoPassword
-  errorMsg.value = ''
-}
 </script>
 
 <template>
@@ -99,7 +93,7 @@ const fillDemo = (demoEmail: string, demoPassword: string) => {
               id="login-email" 
               v-model="email" 
               type="email" 
-              placeholder="admin@gmail.com" 
+              placeholder="nama@instansi.go.id" 
               fluid 
               required
               :invalid="!!errorMsg"
@@ -132,64 +126,6 @@ const fillDemo = (demoEmail: string, demoPassword: string) => {
             class="submit-btn"
           />
         </form>
-      </div>
-
-      <!-- Demo Accounts Section -->
-      <div class="demo-section">
-        <div class="demo-head">
-          <span>AKUN DEMO (KLIK UNTUK ISI CEPAT)</span>
-          <span class="demo-badge">Tersedia di BE</span>
-        </div>
-
-        <div class="demo-list">
-          <!-- Card 1: Admin (Red / Danger) -->
-          <div 
-            @click="fillDemo('admin@gmail.com', 'admin123')"
-            class="demo-card danger"
-            title="Klik untuk gunakan akun Admin"
-          >
-            <div class="demo-card-left">
-              <span class="demo-dot bg-danger"></span>
-              <div>
-                <div class="demo-role text-danger">Admin (Sistem)</div>
-                <div class="demo-email text-danger">admin@gmail.com</div>
-              </div>
-            </div>
-            <span class="demo-pwd text-danger">admin123</span>
-          </div>
-
-          <!-- Card 2: Pengelola (Blue / Accent) -->
-          <div 
-            @click="fillDemo('pengelola.legal@gmail.com', 'pengelola123')"
-            class="demo-card accent"
-            title="Klik untuk gunakan akun Pengelola Legal"
-          >
-            <div class="demo-card-left">
-              <span class="demo-dot bg-accent"></span>
-              <div>
-                <div class="demo-role text-accent">Pengelola (Unit Legal)</div>
-                <div class="demo-email text-accent">pengelola.legal@gmail.com</div>
-              </div>
-            </div>
-            <span class="demo-pwd text-accent">pengelola123</span>
-          </div>
-
-          <!-- Card 3: Pengguna (Green / Success) -->
-          <div 
-            @click="fillDemo('pengguna@gmail.com', 'pengguna123')"
-            class="demo-card success"
-            title="Klik untuk gunakan akun Pengguna"
-          >
-            <div class="demo-card-left">
-              <span class="demo-dot bg-success"></span>
-              <div>
-                <div class="demo-role text-success">Pengguna (Unit Legal)</div>
-                <div class="demo-email text-success">pengguna@gmail.com</div>
-              </div>
-            </div>
-            <span class="demo-pwd text-success">pengguna123</span>
-          </div>
-        </div>
       </div>
     </div>
   </div>
@@ -302,110 +238,6 @@ const fillDemo = (demoEmail: string, demoPassword: string) => {
   border-radius: 8px;
 }
 
-.demo-section {
-  margin-top: 20px;
-}
-
-.demo-head {
-  font-size: 11px;
-  font-weight: 600;
-  margin-bottom: 10px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  color: var(--text-muted);
-}
-
-.demo-badge {
-  font-size: 10.5px;
-  opacity: 0.8;
-}
-
-.demo-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.demo-card {
-  padding: 10px 14px;
-  border-radius: 10px;
-  border: 1px solid;
-  cursor: pointer;
-  transition: transform 0.15s ease, filter 0.15s ease;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.demo-card:hover {
-  transform: translateY(-1px);
-  filter: brightness(0.98);
-}
-
-.demo-card.danger {
-  background: var(--danger-soft);
-  border-color: rgba(239, 68, 68, 0.25);
-}
-
-.demo-card.accent {
-  background: var(--accent-soft);
-  border-color: rgba(59, 130, 246, 0.25);
-}
-
-.demo-card.success {
-  background: var(--success-soft);
-  border-color: rgba(34, 197, 94, 0.25);
-}
-
-.demo-card-left {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-}
-
-.demo-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 9999px;
-  flex-shrink: 0;
-}
-
-.bg-danger { background: #ef4444; }
-.bg-accent { background: #3b82f6; }
-.bg-success { background: #22c55e; }
-
-.demo-role {
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.demo-email {
-  font-size: 11px;
-  font-family: ui-monospace, monospace;
-  opacity: 0.85;
-  word-break: break-all;
-}
-
-.demo-pwd {
-  font-size: 11px;
-  font-family: ui-monospace, monospace;
-  padding: 2px 8px;
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.4);
-}
-
-:root.p-dark .demo-pwd {
-  background: rgba(0, 0, 0, 0.25);
-}
-
-.text-danger { color: var(--danger); }
-.text-accent { color: var(--accent); }
-.text-success { color: var(--success); }
-
 .login-alert-banner {
   display: flex;
   align-items: flex-start;
@@ -479,11 +311,6 @@ const fillDemo = (demoEmail: string, demoPassword: string) => {
 
   .login-card {
     padding: 18px;
-  }
-
-  .demo-head {
-    flex-wrap: wrap;
-    gap: 4px;
   }
 }
 
