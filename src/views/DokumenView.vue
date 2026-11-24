@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import Dialog from 'primevue/dialog'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
@@ -12,11 +12,23 @@ import { useDocumentsStore, type Doc, type Folder } from '../stores/documents'
 import { useAuthStore } from '../stores/auth'
 import { useCategoryBadge } from '../composables/useCategoryBadge'
 import { useAppConfirm } from '../composables/useAppConfirm'
+import { useToast } from '../composables/useToast'
+import { extractApiError } from '../utils/apiError'
+import {
+  getCategoryName,
+  getFolderName as resolveFolderName,
+  getOwnerName,
+  getUserAccessLevel,
+} from '../utils/documentHelpers'
+import DocumentDetailDrawer from '../components/dokumen/DocumentDetailDrawer.vue'
+import FileDropzone from '../components/dokumen/FileDropzone.vue'
+import Icon from '../components/Icon.vue'
 
 const store = useDocumentsStore()
 const authStore = useAuthStore()
 const { getCategoryBadge } = useCategoryBadge()
 const { confirmDelete, confirmAction } = useAppConfirm()
+const { toastMessage, toastVisible, showToast } = useToast()
 
 // ─── Folder Navigation & Tab State ───
 const folderBreadcrumbs = ref<Folder[]>([])
@@ -47,17 +59,7 @@ const newDoc = ref({
   note: 'Unggahan awal',
 })
 const uploadFile = ref<File | null>(null)
-const fileInputRef = ref<HTMLInputElement | null>(null)
 const submitting = ref(false)
-
-function triggerFileInput() {
-  fileInputRef.value?.click()
-}
-
-function clearUploadFile() {
-  uploadFile.value = null
-  if (fileInputRef.value) fileInputRef.value.value = ''
-}
 
 // ─── Move Document State ───
 const isMoveModalOpen = ref(false)
@@ -68,17 +70,7 @@ const moveSubmitting = ref(false)
 // ─── Version Upload State ───
 const isVersionModalOpen = ref(false)
 const versionFile = ref<File | null>(null)
-const versionFileInputRef = ref<HTMLInputElement | null>(null)
 const versionNote = ref('')
-
-function triggerVersionFileInput() {
-  versionFileInputRef.value?.click()
-}
-
-function clearVersionFile() {
-  versionFile.value = null
-  if (versionFileInputRef.value) versionFileInputRef.value.value = ''
-}
 
 // ─── Computed Permissions & Role ───
 const userRole = computed(() => (authStore.userRole || 'Admin').toLowerCase())
@@ -156,8 +148,9 @@ watch([currentFolder, activeTab], () => {
   folderFirst.value = 0
   if (currentFolder.value) {
     fetchFolderDocs(1)
+  } else {
+    fetchFoldersPaginated(1)
   }
-  fetchFoldersPaginated(1)
 })
 
 function getFolderDocCount(folder: any, tab: 'aktif' | 'trash' = 'aktif'): number {
@@ -220,36 +213,44 @@ function openAddFolderModal() {
   isAddFolderModalOpen.value = true
 }
 
-async function submitAddFolder() {
-  if (!folderForm.value.name.trim()) return alert('Nama folder wajib diisi')
+function submitAddFolder() {
+  const folderName = folderForm.value.name.trim()
+  if (!folderName) return showToast('Nama folder wajib diisi')
   if (authStore.isAdmin && !folderForm.value.unit_id) {
-    return alert('Pilih unit untuk folder ini')
+    return showToast('Pilih unit untuk folder ini')
   }
 
-  folderSubmitting.value = true
-  try {
-    const payload: { name: string; unit_id?: string } = {
-      name: folderForm.value.name.trim(),
-    }
-    if (folderForm.value.unit_id) {
-      payload.unit_id = folderForm.value.unit_id
-    }
+  confirmAction({
+    title: 'Buat Folder Baru',
+    message: `Apakah Anda yakin ingin membuat folder "${folderName}"?`,
+    confirmLabel: 'Buat Folder',
+    icon: 'folder',
+    onAccept: async () => {
+      folderSubmitting.value = true
+      try {
+        const payload: { name: string; unit_id?: string } = { name: folderName }
+        if (folderForm.value.unit_id) {
+          payload.unit_id = folderForm.value.unit_id
+        }
 
-    await store.createFolder(payload)
-    isAddFolderModalOpen.value = false
-    await fetchFoldersPaginated(1)
-    await store.fetchFolders({ all: true })
-  } catch (e: any) {
-    alert(e.response?.data?.message || 'Gagal membuat folder')
-  } finally {
-    folderSubmitting.value = false
-  }
+        await store.createFolder(payload)
+        isAddFolderModalOpen.value = false
+        showToast(`Folder "${payload.name}" berhasil dibuat`)
+        await fetchFoldersPaginated(1)
+        await store.fetchFolders({ all: true })
+      } catch (e: unknown) {
+        showToast(extractApiError(e, 'Gagal membuat folder'))
+      } finally {
+        folderSubmitting.value = false
+      }
+    },
+  })
 }
 
 // ─── Upload Document Actions (Only inside folder, no folder field!) ───
 function openUploadModal() {
   if (!currentFolder.value) {
-    return alert('Silakan buka folder terlebih dahulu sebelum mengunggah dokumen.')
+    return showToast('Silakan buka folder terlebih dahulu sebelum mengunggah dokumen.')
   }
   newDoc.value = {
     name: '',
@@ -261,36 +262,44 @@ function openUploadModal() {
   isUploadModalOpen.value = true
 }
 
-async function submitUploadDoc() {
+function submitUploadDoc() {
   if (!currentFolder.value?.id) {
-    return alert('Folder tujuan tidak ditemukan.')
+    return showToast('Folder tujuan tidak ditemukan.')
   }
-  if (!newDoc.value.name.trim()) return alert('Nama dokumen wajib diisi')
-  if (!newDoc.value.category_id) return alert('Pilih kategori terlebih dahulu')
+  const docName = newDoc.value.name.trim()
+  if (!docName) return showToast('Nama dokumen wajib diisi')
+  if (!newDoc.value.category_id) return showToast('Pilih kategori terlebih dahulu')
 
-  submitting.value = true
-  try {
-    await store.uploadDocument({
-      name: newDoc.value.name.trim(),
-      folder_id: currentFolder.value.id,
-      category_id: newDoc.value.category_id,
-      tags: newDoc.value.tags,
-      file: uploadFile.value,
-      note: newDoc.value.note,
-    })
-    isUploadModalOpen.value = false
-    await fetchFolderDocs(1)
-    await fetchFoldersPaginated(1)
-  } catch (e: any) {
-    alert(e.response?.data?.message ?? 'Gagal mengunggah dokumen')
-  } finally {
-    submitting.value = false
-  }
-}
+  const targetFolderId = currentFolder.value.id
+  const targetFolderName = currentFolder.value.name
 
-function handleFileChange(event: Event) {
-  const target = event.target as HTMLInputElement
-  uploadFile.value = target.files?.[0] ?? null
+  confirmAction({
+    title: 'Unggah Dokumen Baru',
+    message: `Apakah Anda yakin ingin mengunggah "${docName}" ke folder "${targetFolderName}"?`,
+    confirmLabel: 'Unggah Dokumen',
+    icon: 'upload',
+    onAccept: async () => {
+      submitting.value = true
+      try {
+        await store.uploadDocument({
+          name: docName,
+          folder_id: targetFolderId,
+          category_id: newDoc.value.category_id,
+          tags: newDoc.value.tags,
+          file: uploadFile.value,
+          note: newDoc.value.note,
+        })
+        isUploadModalOpen.value = false
+        showToast(`Dokumen "${docName}" berhasil diunggah`)
+        await fetchFolderDocs(1)
+        await fetchFoldersPaginated(1)
+      } catch (e: unknown) {
+        showToast(extractApiError(e, 'Gagal mengunggah dokumen'))
+      } finally {
+        submitting.value = false
+      }
+    },
+  })
 }
 
 // ─── Move Document Actions ───
@@ -304,23 +313,36 @@ const moveFoldersList = computed(() => {
   return store.folders
 })
 
-async function submitMoveDocument() {
+function submitMoveDocument() {
   if (!docToMove.value || !moveTargetFolderId.value) return
-  moveSubmitting.value = true
-  try {
-    await store.moveDocument(docToMove.value.id, moveTargetFolderId.value)
-    isMoveModalOpen.value = false
-    if (selectedDoc.value?.id === docToMove.value.id) {
-      const full = await store.fetchDocument(docToMove.value.id)
-      if (full) selectedDoc.value = full
-    }
-    await fetchFolderDocs(1)
-    await fetchFoldersPaginated(1)
-  } catch (e: any) {
-    alert(e.response?.data?.message || 'Gagal memindahkan dokumen')
-  } finally {
-    moveSubmitting.value = false
-  }
+  const doc = docToMove.value
+  const targetFolderId = moveTargetFolderId.value
+  const targetFolderName = getFolderName(targetFolderId)
+
+  confirmAction({
+    title: 'Pindahkan Dokumen',
+    message: `Apakah Anda yakin ingin memindahkan "${doc.name}" ke folder "${targetFolderName}"?`,
+    confirmLabel: 'Pindahkan',
+    icon: 'folder',
+    onAccept: async () => {
+      moveSubmitting.value = true
+      try {
+        await store.moveDocument(doc.id, targetFolderId)
+        isMoveModalOpen.value = false
+        showToast(`Dokumen "${doc.name}" berhasil dipindahkan`)
+        if (selectedDoc.value?.id === doc.id) {
+          const full = await store.fetchDocument(doc.id)
+          if (full) selectedDoc.value = full
+        }
+        await fetchFolderDocs(1)
+        await fetchFoldersPaginated(1)
+      } catch (e: unknown) {
+        showToast(extractApiError(e, 'Gagal memindahkan dokumen'))
+      } finally {
+        moveSubmitting.value = false
+      }
+    },
+  })
 }
 
 // ─── Document Detail, Download & Trash Actions ───
@@ -334,12 +356,21 @@ function closeDrawer() {
   isDrawerOpen.value = false
 }
 
-async function handleDownload(doc: Doc) {
-  try {
-    await store.downloadDocument(doc.id)
-  } catch (e: any) {
-    alert(e.response?.data?.message || 'Gagal mengunduh dokumen')
-  }
+function handleDownload(doc: Doc) {
+  confirmAction({
+    title: 'Unduh Dokumen',
+    message: `Apakah Anda yakin ingin mengunduh dokumen "${doc.name}"?`,
+    confirmLabel: 'Unduh',
+    icon: 'download',
+    acceptIcon: 'download',
+    onAccept: async () => {
+      try {
+        await store.downloadDocument(doc.id)
+      } catch (e: unknown) {
+        showToast(extractApiError(e, 'Gagal mengunduh dokumen'))
+      }
+    },
+  })
 }
 
 function handleTrash(doc: Doc) {
@@ -351,11 +382,12 @@ function handleTrash(doc: Doc) {
     onAccept: async () => {
       try {
         await store.trashDocument(doc.id)
+        showToast(`"${doc.name}" dipindahkan ke tempat sampah`)
         if (selectedDoc.value?.id === doc.id) closeDrawer()
         await fetchFolderDocs(1)
         await fetchFoldersPaginated(1)
-      } catch (e: any) {
-        alert(e.response?.data?.message ?? 'Gagal memindahkan ke tempat sampah')
+      } catch (e: unknown) {
+        showToast(extractApiError(e, 'Gagal memindahkan ke tempat sampah'))
       }
     },
   })
@@ -369,11 +401,12 @@ function handleRestore(doc: Doc) {
     onAccept: async () => {
       try {
         await store.restoreDocument(doc.id)
+        showToast(`"${doc.name}" berhasil dipulihkan`)
         if (selectedDoc.value?.id === doc.id) closeDrawer()
         await fetchFolderDocs(1)
         await fetchFoldersPaginated(1)
-      } catch (e: any) {
-        alert(e.response?.data?.message ?? 'Gagal memulihkan dokumen')
+      } catch (e: unknown) {
+        showToast(extractApiError(e, 'Gagal memulihkan dokumen'))
       }
     },
   })
@@ -388,11 +421,12 @@ function handlePurge(doc: Doc) {
     onAccept: async () => {
       try {
         await store.deleteDocument(doc.id)
+        showToast(`"${doc.name}" dihapus permanen`)
         if (selectedDoc.value?.id === doc.id) closeDrawer()
         await fetchFolderDocs(1)
         await fetchFoldersPaginated(1)
-      } catch (e: any) {
-        alert(e.response?.data?.message ?? 'Gagal menghapus permanen')
+      } catch (e: unknown) {
+        showToast(extractApiError(e, 'Gagal menghapus permanen'))
       }
     },
   })
@@ -406,83 +440,43 @@ function openVersionModal(doc: Doc) {
   isVersionModalOpen.value = true
 }
 
-function handleVersionFileChange(event: Event) {
-  const target = event.target as HTMLInputElement
-  versionFile.value = target.files?.[0] ?? null
-}
-
-async function submitUploadVersion() {
-  if (!versionFile.value) return alert('Pilih file terlebih dahulu')
+function submitUploadVersion() {
+  if (!versionFile.value) return showToast('Pilih file terlebih dahulu')
   if (!selectedDoc.value) return
-  submitting.value = true
-  try {
-    await store.uploadVersion(selectedDoc.value.id, versionFile.value, versionNote.value)
-    isVersionModalOpen.value = false
-    const full = await store.fetchDocument(selectedDoc.value.id)
-    if (full) selectedDoc.value = full
-    await fetchFolderDocs(Math.floor(docFirst.value / rows) + 1)
-  } catch (e: any) {
-    alert(e.response?.data?.message ?? 'Gagal upload versi')
-  } finally {
-    submitting.value = false
-  }
+  const doc = selectedDoc.value
+  const file = versionFile.value
+
+  confirmAction({
+    title: 'Unggah Versi Baru',
+    message: `Apakah Anda yakin ingin mengunggah versi baru untuk "${doc.name}"?`,
+    submessage: `File: ${file.name} (${store.fmtSize(file.size)})`,
+    confirmLabel: 'Upload Versi',
+    icon: 'upload',
+    onAccept: async () => {
+      submitting.value = true
+      try {
+        await store.uploadVersion(doc.id, file, versionNote.value)
+        isVersionModalOpen.value = false
+        showToast('Versi baru dokumen berhasil diunggah')
+        const full = await store.fetchDocument(doc.id)
+        if (full) selectedDoc.value = full
+        await fetchFolderDocs(Math.floor(docFirst.value / rows) + 1)
+      } catch (e: unknown) {
+        showToast(extractApiError(e, 'Gagal upload versi'))
+      } finally {
+        submitting.value = false
+      }
+    },
+  })
 }
 
 // ─── Helper Functions ───
-function getCategoryName(doc: Doc): string {
-  return doc.category?.name || doc.categoryName || (typeof doc.category === 'string' ? doc.category : '-')
-}
-
-function getOwnerName(doc: Doc): string {
-  return doc.owner?.name || doc.ownerName || (typeof doc.owner === 'string' ? doc.owner : '-')
-}
-
 function getFolderName(folderId?: string): string {
-  if (!folderId) return '-'
-  const f = store.folders.find(x => x.id === folderId)
-  return f ? f.name : folderId
-}
-
-function isDocTrashed(doc: Doc): boolean {
-  return doc.status === 'trashed' || !!doc.deleted_at || !!doc.deletedAt
-}
-
-function getCurrentVersion(doc: Doc): any {
-  if (doc.latest_version) {
-    return {
-      v: doc.latest_version.version_number,
-      size: doc.latest_version.size_bytes,
-      uploader: doc.latest_version.uploader?.name || 'Admin',
-      note: doc.latest_version.note,
-      checksum: doc.latest_version.checksum,
-    }
-  }
-  if (!doc.versions || doc.versions.length === 0) {
-    return { v: 1, size: doc.size || 0, uploader: 'Admin' }
-  }
-  const last = doc.versions[doc.versions.length - 1]
-  return {
-    v: last.version_number ?? (last as any).v ?? 1,
-    size: last.size_bytes ?? (last as any).size ?? 0,
-    uploader: last.uploader?.name ?? (last as any).uploader ?? 'Admin',
-    note: last.note,
-    checksum: last.checksum,
-  }
+  return resolveFolderName(store.folders, folderId)
 }
 
 function getUserLevel(doc: Doc) {
-  if (canModify(doc)) {
-    return {
-      label: 'Kelola',
-      color: '#f87171',
-      dot: '#ef4444',
-    }
-  }
-  return {
-    label: 'Lihat',
-    color: '#94a3b8',
-    dot: '#64748b',
-  }
+  return getUserAccessLevel(canModify(doc))
 }
 </script>
 
@@ -515,12 +509,12 @@ function getUserLevel(doc: Doc) {
         </template>
       </div>
 
-      <div class="flex items-center gap-2">
+      <div class="flex items-center gap-2 flex-wrap">
         <!-- Tambah Folder (hanya saat di Semua Folder root, untuk Admin/Pengelola) -->
         <button
           v-if="!currentFolder && canAddFolder"
           type="button"
-          class="btn ghost sm"
+          class="btn primary sm"
           @click="openAddFolderModal"
         >
           + Tambah Folder
@@ -605,15 +599,15 @@ function getUserLevel(doc: Doc) {
           class="folder-row flex items-center justify-between p-2 rounded hover:bg-surface-2 transition-colors cursor-pointer group"
           @click="openFolder(folder)"
         >
-          <div class="flex items-center gap-2.5 min-w-0">
+          <div class="flex items-center gap-2.5 min-w-0 flex-1">
             <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" class="text-muted flex-shrink-0">
               <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2z"/>
             </svg>
-            <span class="text-sm font-medium">{{ folder.name }}</span>
-            <span v-if="folder.unit?.name" class="text-xs text-muted"> — {{ folder.unit.name }}</span>
+            <span class="text-sm font-medium truncate">{{ folder.name }}</span>
+            <span v-if="folder.unit?.name" class="text-xs text-muted truncate"> — {{ folder.unit.name }}</span>
           </div>
 
-          <div class="flex items-center gap-3">
+          <div class="flex items-center gap-3 shrink-0">
             <span class="count text-xs text-muted">
               {{ getFolderDocCount(folder, activeTab) }}
               {{ activeTab === 'aktif' ? 'dokumen' : 'dokumen terhapus' }}
@@ -764,7 +758,7 @@ function getUserLevel(doc: Doc) {
                     <!-- Unduh Dokumen -->
                     <button
                       type="button"
-                      class="iconbtn"
+                      class="iconbtn info"
                       title="Unduh dokumen"
                       @click="handleDownload(doc)"
                     >
@@ -794,7 +788,7 @@ function getUserLevel(doc: Doc) {
                     <button
                       v-if="canModify(doc)"
                       type="button"
-                      class="iconbtn hover:text-red-400"
+                      class="iconbtn danger"
                       title="Pindahkan ke tempat sampah"
                       @click="handleTrash(doc)"
                     >
@@ -810,7 +804,7 @@ function getUserLevel(doc: Doc) {
                     <button
                       v-if="canModify(doc)"
                       type="button"
-                      class="iconbtn hover:text-green-400"
+                      class="iconbtn success"
                       title="Pulihkan dokumen"
                       @click="handleRestore(doc)"
                     >
@@ -822,7 +816,7 @@ function getUserLevel(doc: Doc) {
                     <button
                       v-if="canModify(doc)"
                       type="button"
-                      class="iconbtn hover:text-red-400"
+                      class="iconbtn danger"
                       title="Hapus permanen"
                       @click="handlePurge(doc)"
                     >
@@ -855,165 +849,25 @@ function getUserLevel(doc: Doc) {
     </div>
 
     <!-- ═══════════════════════════════════════════════════════ -->
-    <!-- SCRIM & DETAIL DRAWER                                   -->
+    <!-- SHARED DOCUMENT DETAIL DRAWER                           -->
     <!-- ═══════════════════════════════════════════════════════ -->
-    <div class="scrim" :class="{ open: isDrawerOpen }" @click="closeDrawer"></div>
-    <div class="drawer" :class="{ open: isDrawerOpen }">
-      <template v-if="selectedDoc">
-        <div class="drawer-head">
-          <div class="flex flex-col gap-1 pr-4">
-            <h3 class="font-bold text-sm leading-snug">{{ selectedDoc.name }}</h3>
-            <div class="flex items-center gap-2">
-              <span
-                class="pill"
-                :style="{
-                  background: getCategoryBadge(getCategoryName(selectedDoc)).bg,
-                  color: getCategoryBadge(getCategoryName(selectedDoc)).text,
-                  border: '1px solid ' + getCategoryBadge(getCategoryName(selectedDoc)).text + '33',
-                }"
-              >
-                <span
-                  class="dot"
-                  :style="{ background: getCategoryBadge(getCategoryName(selectedDoc)).dot }"
-                ></span>
-                {{ getCategoryName(selectedDoc) }}
-              </span>
-              <span class="text-xs text-text-muted">
-                Folder: {{ getFolderName(selectedDoc.folderId || selectedDoc.folder_id) }}
-              </span>
-            </div>
-          </div>
-          <button class="iconbtn" @click="closeDrawer" title="Tutup">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <line x1="18" y1="6" x2="6" y2="18"></line>
-              <line x1="6" y1="6" x2="18" y2="18"></line>
-            </svg>
-          </button>
-        </div>
-
-        <div class="drawer-body">
-          <!-- Information Grid -->
-          <div>
-            <div class="section-title">Informasi Dokumen</div>
-            <div class="field-grid">
-              <div class="field">
-                <span class="k">Ukuran File</span>
-                <span class="v num">{{ store.fmtSize(selectedDoc.size) }}</span>
-              </div>
-              <div class="field">
-                <span class="k">Versi Aktif</span>
-                <span class="v num">v{{ getCurrentVersion(selectedDoc)?.v || 1 }}</span>
-              </div>
-              <div class="field">
-                <span class="k">Pemilik</span>
-                <span class="v">{{ getOwnerName(selectedDoc) }}</span>
-              </div>
-              <div class="field">
-                <span class="k">Tanggal</span>
-                <span class="v num text-xs">{{ selectedDoc.date }}</span>
-              </div>
-            </div>
-          </div>
-
-          <!-- Tags -->
-          <div v-if="selectedDoc.tags && selectedDoc.tags.length">
-            <div class="section-title">Tags</div>
-            <div class="taglist">
-              <span v-for="tag in selectedDoc.tags" :key="tag.id" class="tag">
-                #{{ typeof tag === 'string' ? tag : tag.name }}
-              </span>
-            </div>
-          </div>
-
-          <!-- Version History -->
-          <div>
-            <div class="section-title">
-              Riwayat Versi ({{ selectedDoc.versions?.length || 1 }})
-            </div>
-            <div class="flex flex-col">
-              <div
-                v-for="(ver, idx) in (selectedDoc.versions || [getCurrentVersion(selectedDoc)])"
-                :key="idx"
-                class="vrow"
-                :class="{ current: idx === (selectedDoc.versions?.length || 1) - 1 }"
-              >
-                <div class="vnum">v{{ ver.version_number ?? (ver as any).v ?? 1 }}</div>
-                <div class="flex-1 min-w-0">
-                  <div class="flex items-center gap-2">
-                    <span class="font-semibold text-xs">{{ ver.uploader?.name ?? (ver as any).uploader ?? 'Admin' }}</span>
-                    <span class="num text-[11px] text-text-muted">{{ store.fmtSize(ver.size_bytes ?? (ver as any).size) }}</span>
-                    <span
-                      v-if="idx === (selectedDoc.versions?.length || 1) - 1"
-                      class="text-[10px] bg-accent-soft text-accent px-1.5 py-0.5 rounded font-bold"
-                    >
-                      AKTIF
-                    </span>
-                  </div>
-                  <div v-if="ver.note" class="text-[11.5px] text-text-muted truncate">"{{ ver.note }}"</div>
-                  <code v-if="ver.checksum" class="text-[10px] text-muted block mt-0.5 font-mono">
-                    SHA: {{ ver.checksum.substring(0, 16) }}…
-                  </code>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <!-- Action Buttons in Drawer -->
-          <div class="btnrow pt-3 border-t border-border mt-auto flex flex-wrap gap-2">
-            <button class="btn primary flex-1 justify-center" @click="handleDownload(selectedDoc)">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                <polyline points="7 10 12 15 17 10"></polyline>
-                <line x1="12" y1="15" x2="12" y2="3"></line>
-              </svg>
-              Unduh File
-            </button>
-
-            <!-- Move folder button in drawer -->
-            <button
-              v-if="!isDocTrashed(selectedDoc) && canModify(selectedDoc)"
-              class="btn ghost sm"
-              @click="openMoveModal(selectedDoc)"
-            >
-              Pindah Folder
-            </button>
-
-            <!-- Upload new version button (when active) -->
-            <button
-              v-if="!isDocTrashed(selectedDoc)"
-              class="btn ghost sm"
-              @click="openVersionModal(selectedDoc)"
-            >
-              + Versi Baru
-            </button>
-
-            <!-- Trash or Restore -->
-            <button
-              v-if="!isDocTrashed(selectedDoc) && canModify(selectedDoc)"
-              class="btn danger sm"
-              @click="handleTrash(selectedDoc)"
-            >
-              Pindahkan ke Sampah
-            </button>
-            <button
-              v-else-if="canModify(selectedDoc)"
-              class="btn ghost sm"
-              style="color: var(--success); font-weight: 600"
-              @click="handleRestore(selectedDoc)"
-            >
-              Pulihkan
-            </button>
-            <button
-              v-if="isDocTrashed(selectedDoc) && canModify(selectedDoc)"
-              class="btn danger sm"
-              @click="handlePurge(selectedDoc)"
-            >
-              Hapus Permanen
-            </button>
-          </div>
-        </div>
-      </template>
-    </div>
+    <DocumentDetailDrawer
+      :open="isDrawerOpen"
+      :doc="selectedDoc"
+      :folder-name="getFolderName(selectedDoc?.folderId || selectedDoc?.folder_id)"
+      :format-size="store.fmtSize"
+      :can-modify="selectedDoc ? canModify(selectedDoc) : false"
+      show-move-action
+      show-version-action
+      show-purge-action
+      @close="closeDrawer"
+      @download="handleDownload"
+      @move="openMoveModal"
+      @upload-version="openVersionModal"
+      @trash="handleTrash"
+      @restore="handleRestore"
+      @purge="handlePurge"
+    />
 
     <!-- ═══════════════════════════════════════════════════════ -->
     <!-- MODAL: PINDAHKAN DOKUMEN KE FOLDER LAIN                 -->
@@ -1056,7 +910,7 @@ function getUserLevel(doc: Doc) {
               <span v-if="f.unit?.name" class="text-[10px] text-muted">({{ f.unit.name }})</span>
             </div>
 
-            <div class="flex items-center gap-2">
+            <div class="flex items-center gap-2 flex-wrap">
               <span
                 class="text-[11px] px-2 py-0.5 rounded font-bold"
                 :class="moveTargetFolderId === f.id ? 'bg-accent text-accent-contrast' : 'bg-surface-2 text-muted'"
@@ -1148,7 +1002,7 @@ function getUserLevel(doc: Doc) {
     >
       <div class="flex flex-col gap-3 py-2">
         <!-- Target folder display (No dropdown!) -->
-        <div class="p-2.5 rounded bg-surface-2 border border-border text-xs flex items-center justify-between">
+        <div class="p-2.5 rounded bg-surface-2 border border-border text-xs flex items-center justify-between flex-wrap gap-1.5">
           <span>Folder Tujuan: <strong class="text-accent">{{ currentFolder?.name }}</strong></span>
           <span v-if="currentFolder?.unit?.name" class="text-muted">Unit: {{ currentFolder.unit.name }}</span>
         </div>
@@ -1175,75 +1029,12 @@ function getUserLevel(doc: Doc) {
           <InputText v-model="newDoc.tags" placeholder="kontrak, sewa, gedung" class="w-full" />
         </label>
 
-        <div class="formlabel">
-          <span>Pilih File Dokumen <span class="text-red-500">*</span></span>
-          <input
-            ref="fileInputRef"
-            type="file"
-            accept=".pdf,.docx,.xlsx,.doc,.xls,.png,.jpg,.jpeg"
-            class="hidden"
-            @change="handleFileChange"
-          />
-
-          <!-- Belum memilih file -->
-          <div
-            v-if="!uploadFile"
-            class="dropzone-box"
-            @click="triggerFileInput"
-          >
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" class="text-accent mb-1">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-              <polyline points="17 8 12 3 7 8"/>
-              <line x1="12" y1="3" x2="12" y2="15"/>
-            </svg>
-            <div class="text-xs font-semibold text-text">Klik untuk memilih file dokumen</div>
-            <div class="text-[11px] text-muted">PDF, DOCX, XLSX, JPG, PNG (Maks 25MB)</div>
-          </div>
-
-          <!-- File terpilih -->
-          <div
-            v-else
-            class="file-selected-box"
-          >
-            <div class="flex items-center gap-2.5 min-w-0">
-              <div class="file-icon-badge">
-                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                  <polyline points="14 2 14 8 20 8"/>
-                </svg>
-              </div>
-              <div class="min-w-0">
-                <div class="text-xs font-semibold truncate text-text" :title="uploadFile.name">
-                  {{ uploadFile.name }}
-                </div>
-                <div class="text-[11px] text-muted">
-                  {{ store.fmtSize(uploadFile.size) }}
-                </div>
-              </div>
-            </div>
-
-            <div class="flex items-center gap-1.5 flex-shrink-0">
-              <button
-                type="button"
-                class="btn ghost sm text-xs"
-                @click="triggerFileInput"
-              >
-                Ganti
-              </button>
-              <button
-                type="button"
-                class="iconbtn sm hover:text-red-400"
-                title="Hapus file"
-                @click="clearUploadFile"
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <line x1="18" y1="6" x2="6" y2="18"/>
-                  <line x1="6" y1="6" x2="18" y2="18"/>
-                </svg>
-              </button>
-            </div>
-          </div>
-        </div>
+        <FileDropzone
+          v-model="uploadFile"
+          label="Pilih File Dokumen"
+          empty-text="Klik untuk memilih file dokumen"
+          :format-size="store.fmtSize"
+        />
 
         <label class="formlabel">
           <span>Catatan Versi Awal</span>
@@ -1279,75 +1070,12 @@ function getUserLevel(doc: Doc) {
           Dokumen: <strong>{{ selectedDoc?.name }}</strong>
         </div>
 
-        <div class="formlabel">
-          <span>Pilih File Versi Baru <span class="text-red-500">*</span></span>
-          <input
-            ref="versionFileInputRef"
-            type="file"
-            accept=".pdf,.docx,.xlsx,.doc,.xls,.png,.jpg,.jpeg"
-            class="hidden"
-            @change="handleVersionFileChange"
-          />
-
-          <!-- Belum memilih file -->
-          <div
-            v-if="!versionFile"
-            class="dropzone-box"
-            @click="triggerVersionFileInput"
-          >
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" class="text-accent mb-1">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-              <polyline points="17 8 12 3 7 8"/>
-              <line x1="12" y1="3" x2="12" y2="15"/>
-            </svg>
-            <div class="text-xs font-semibold text-text">Klik untuk memilih file versi baru</div>
-            <div class="text-[11px] text-muted">PDF, DOCX, XLSX, JPG, PNG (Maks 25MB)</div>
-          </div>
-
-          <!-- File terpilih -->
-          <div
-            v-else
-            class="file-selected-box"
-          >
-            <div class="flex items-center gap-2.5 min-w-0">
-              <div class="file-icon-badge">
-                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                  <polyline points="14 2 14 8 20 8"/>
-                </svg>
-              </div>
-              <div class="min-w-0">
-                <div class="text-xs font-semibold truncate text-text" :title="versionFile.name">
-                  {{ versionFile.name }}
-                </div>
-                <div class="text-[11px] text-muted">
-                  {{ store.fmtSize(versionFile.size) }}
-                </div>
-              </div>
-            </div>
-
-            <div class="flex items-center gap-1.5 flex-shrink-0">
-              <button
-                type="button"
-                class="btn ghost sm text-xs"
-                @click="triggerVersionFileInput"
-              >
-                Ganti
-              </button>
-              <button
-                type="button"
-                class="iconbtn sm hover:text-red-400"
-                title="Hapus file"
-                @click="clearVersionFile"
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <line x1="18" y1="6" x2="6" y2="18"/>
-                  <line x1="6" y1="6" x2="18" y2="18"/>
-                </svg>
-              </button>
-            </div>
-          </div>
-        </div>
+        <FileDropzone
+          v-model="versionFile"
+          label="Pilih File Versi Baru"
+          empty-text="Klik untuk memilih file versi baru"
+          :format-size="store.fmtSize"
+        />
 
         <label class="formlabel">
           <span>Catatan Perubahan</span>
@@ -1373,53 +1101,18 @@ function getUserLevel(doc: Doc) {
         </div>
       </template>
     </Dialog>
+    <!-- Toast Notification -->
+    <div v-if="toastVisible" class="toasts">
+      <div class="toast">
+        <Icon name="check" :size="16" />
+        <span>{{ toastMessage }}</span>
+      </div>
+    </div>
   </div>
 </template>
 
 <style scoped>
 .panel {
   padding: 0;
-}
-
-.dropzone-box {
-  border: 1.5px dashed var(--border);
-  border-radius: 8px;
-  padding: 20px 16px;
-  background: var(--surface-2);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  user-select: none;
-}
-
-.dropzone-box:hover {
-  border-color: var(--accent);
-  background: var(--surface);
-}
-
-.file-selected-box {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 10px 14px;
-  background: var(--surface-2);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.file-icon-badge {
-  width: 34px;
-  height: 34px;
-  border-radius: 6px;
-  background: var(--accent-soft, rgba(99, 102, 241, 0.12));
-  color: var(--accent);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
 }
 </style>
